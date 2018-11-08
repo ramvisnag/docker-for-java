@@ -1,0 +1,247 @@
+= Chapter 5
+
+== 5.1 Couchbase cluster using services
+
+Slides
+
+. Show how Docker image was created: https://github.com/arun-gupta/docker-images/tree/master/couchbase
+
+. Initialize swarm mode: `docker swarm init`
+. Create overlay network:
++
+```
+docker network create \
+  -d overlay \
+  couchbase
+```
++
+. Show the list of networks: `docker network ls`
+. Create master service:
++
+```
+docker service create \
+  --name couchbase-master \
+  --replicas 1 \
+  -p 8091:8091 \
+  --network couchbase \
+  -e TYPE=MASTER \
+  arungupta/couchbase
+```
++
+. List the services: `docker service ls`
+. Show logs: `docker service couchbase-master logs -f`
+. Show Couchbase Web Console at http://localhost:8091, show `Server Nodes` tab
+. Create worker service:
++
+```
+docker service create \
+  --name couchbase-worker \
+  --replicas 1 \
+  --network couchbase \
+  -e TYPE=WORKER \
+  -e COUCHBASE_MASTER=couchbase-master.couchbase \
+  -e AUTO_REBALANCE=false \
+  arungupta/couchbase
+```
++
+. Show services: `docker service ls`
+.. Talk about experimental release
+. Show logs: `docker service logs couchbase-worker -f`
+. Show Couchbase Web Console again and highlight `Pending Rabalance` tab
+. Click on `Rebalance` to rebalance the cluster
+. Scale the cluster: `docker service scale couchbase-worker=2`
+. Show services: `docker service ls`
+. Show Couchbase Web Console again and highlight `Pending Rabalance` tab
+. Remove the services: `docker service rm couchbase-master couchbase-worker`
+. Remove the network: `docker network rm couchbase`
+
+== 5.2 Persistent Containers Overview
+
+Slides only
+
+== 5.3 Persistent Containers
+
+=== Implicit per-container storage
+
+. Terminal1: Run Couchbase container: `docker container run -d --name db arungupta/couchbase`
+. Check volume mounts: `docker container inspect --format '{{json .Mounts }}' db  | jq`
+.. Show `/opt/couchbase/var` is mapped to the implicit storage
+. Check the mounted volume: `docker container inspect --format='{{range .Mounts}}{{.Source}}{{end}}' db`
+. Terminal2: Log into Docker for Mac VM:
++
+```
+docker container run -it --privileged --pid=host debian nsenter -t 1 -m -u -n -i sh
+```
++
+.. `debian` image has `nsenter`
+.. `--pid=host` means enter the process space of the VM running Docker For Mac
+.. `sh` says to run a shell there
++
+. Show `ls <volume-dir>`
+. Terminal1: Stop container: `docker container stop db`
+. Remove container, including the volume: `docker container rm -v db`
+. Terminal2: Show that the volume does not exist any more
+
+=== Explicit per-container storage
+
+. Create a new volume: `docker volume create my_couchbase`
+. Check the list of volumes: `docker volume ls`
+. Get more details about the volume: `docker volume inspect my_couchbase`
+. Create a Couchbase container using this volume:
++
+```
+docker container run \
+  -d \
+  --name db \
+  -p 8091-8093:8091-8093 \
+  -v my_couchbase:/opt/couchbase/var \
+  arungupta/couchbase
+```
++
+. Check the volume mount again: `docker container inspect --format '{{json .Mounts }}' db  | jq`
+.. Show how the newly created volume is used here
+. Terminate the container: `docker container rm -f db`
+. Delete the volume explicitly: `docker volume rm my_couchbase`
+
+=== Per-host storage
+
+. Run Couchbase container
++
+```
+docker container run \
+  -d \
+  --name db \
+  -p 8091-8093:8091-8093 \
+  -v ~/couchbase:/opt/couchbase/var \
+  arungupta/couchbase
+```
++
+. Check volume mounts: `docker container inspect --format '{{json .Mounts }}' db  | jq`
+.. Show `/opt/couchbase/var` is mapped to the explicit directory
+. Show data in `~/couchbase`
+. Login to Couchbase Web Console at http://localhost:8091
+. Create a new bucket
+. Kill the container: `docker container rm -f db`
+. Restart the container using previous command
+. Access Couchbase Web Console and show that the bucket still exists
+
+== 5.4 Docker Volume Plugin
+
+Slides only
+
+== 5.5 Docker Volume Plugin in practice
+
+=== Pre setup 
+
+==== EC2 instance
+
+. Ubuntu 14.04, `m3.large`
+.. Add `8091` to inbound rules
+. Login to EC2 instance: `ssh -i ~/.ssh/arun-cb-west1.pem ubuntu@<public-ip>`
+. Update: `sudo apt-get update`
+. Install Docker: `curl -sSL https://get.docker.com/ | sh`
+. Enable non-root access: `sudo usermod -aG docker ubuntu`
+. Logout and log back in
+
+==== AWS EBS Volume
+
+. Create 10GB EBS volume
+. Attach the volume to EC2 instance using instance id
+
+==== Px-dev
+
+In EC2 instance:
+
+. Create `etcd`:
++
+```
+docker container run -v \
+  /data/varlib/etcd \
+  -p 4001:4001 \
+  -d \
+  portworx/etcd:latest
+```
++
+. Make root mounted volumes shareable: `sudo mount --make-shared /`
+. Use `lsblk` to check that the volume is attached to EC2 instance
+. Start `px-dev` container:
++
+```
+docker container run \
+  --restart=always \
+  --name px \
+  -d \
+  --net=host \
+  --privileged=true                             \
+  -v /run/docker/plugins:/run/docker/plugins    \
+  -v /var/lib/osd:/var/lib/osd:shared           \
+  -v /dev:/dev                                  \
+  -v /etc/pwx:/etc/pwx                          \
+  -v /opt/pwx/bin:/export_bin:shared            \
+  -v /var/run/docker.sock:/var/run/docker.sock  \
+  -v /var/cores:/var/cores                      \
+  -v /usr/src:/usr/src                           \
+  --ipc=host                                    \
+  portworx/px-dev \
+  -daemon \
+  -k \
+  etcd://localhost:4001 \
+  -c cluster1 \
+  -s /dev/xvdf
+```
++
+. Check the logs: `docker container logs -f px`
+
+=== Show
+
+. Talk:
+.. EBS volume attached to EC2 instance
+.. `etcd` container
+.. `px-dev` container
+
+. List the volumes: `docker volume ls`
+. Check the status of attached volumes that are available to Portworx using `sudo /opt/pwx/bin/pxctl status`
+. Create a Docker volume:
++
+```
+docker volume create -d pxd -o size=10G -o fs=ext4 --name cbvol
+```
++
+. List the volumes: `docker volume ls` and show newly created volume
+. Create a Couchbase container with Portworx volume:
++
+```
+docker container run \
+  -d \
+  --name db \
+  -v cbvol:/opt/couchbase/var \
+  -p 8091-8094:8091-8094 \
+  -p 11210:11210 \
+  arungupta/couchbase
+```
++
+. Login to Couchbase Web Console: http://<public-ip>:8091
+.. Login: `Administrator`, password: `password`
+. Create a new data bucket
+. See the list of containers
+. Kill the db container: `docker container rm -f db`
+. Restart the database container:
++
+```
+docker container run \
+  -d \
+  --name db \
+  -v cbvol:/opt/couchbase/var \
+  -p 8091-8094:8091-8094 \
+  -p 11210:11210 \
+  arungupta/couchbase
+```
++
+. Login to Couchbase Web Console and show that the bucket still exists
+
+=== Cleanup
+
+. Detach volume
+. Delete volume
+. Terminate EC2 instance
+
